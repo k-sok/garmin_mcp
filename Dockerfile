@@ -34,8 +34,11 @@ RUN mkdir -p /root/.garminconnect && \
 # set GARMIN_MCP_TRANSPORT=streamable-http to serve over this port (e.g. in k8s).
 # EXPOSE 8000
 
-# Set the entrypoint to run the MCP server
-ENTRYPOINT ["garmin-mcp"]
+# The entrypoint seeds the token store from GARMIN_TOKENS_JSON when it is set
+# (see src/garmin_mcp/seed_tokens.py), then starts the MCP server.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["docker-entrypoint.sh"]
 
 # Health check (optional - adjust based on your needs)
 # HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
