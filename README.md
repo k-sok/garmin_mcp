@@ -170,6 +170,33 @@ Example — hand-pick tools without a profile:
 }
 ```
 
+### File tools off (shared or hosted servers)
+
+Four tools read or write files at paths the model chooses on the machine the
+server runs on: `set_fit_download_dir`, `download_activity_file`,
+`download_course_gpx` and `upload_course`. When several people's servers share
+a machine that is a way to reach another person's files. Set
+
+```json
+"env": {
+  "GARMIN_FILE_TOOLS": "off"
+}
+```
+
+to remove these four after every profile, allowlist and denylist has been
+applied, so none of them can bring a file tool back. Unset means `on` (all
+tools as before); the value is trimmed and case-insensitive, and an empty or
+other value stops the server at start-up. Tools that write to your Garmin
+account stay. `get_activity_fit_data` and `get_activity_fit_messages` stay too:
+they fetch the FIT file from Garmin into memory and never touch the
+filesystem. A guard test (`tests/unit/test_file_access_guard.py`) fails when
+any other tool opens, creates or lists a local file.
+
+Every per-user file follows the process's own settings: the token store is
+`$GARMINTOKENS`, else `~/.garminconnect`, and the FIT config is
+`$GARMIN_FIT_CONFIG`, else `~/.garminconnect_fit_config.json`, so two
+processes with different `HOME` values never share a file.
+
 ## High-level workout tools
 
 These builder tools let an LLM create and schedule workouts without writing raw Garmin JSON.

@@ -142,6 +142,20 @@ ACTIVITIES_TOOLS = CORE_TOOLS | frozenset(
     }
 )
 
+# Functions that may touch files because only the file tools (or each other)
+# call them. The guard test (tests/unit/test_file_access_guard.py) lets file,
+# process and socket calls appear only in FILE_TOOLS and these helpers, and
+# lets these helpers be referenced only from FILE_TOOLS or each other. Adding a
+# name here is a security decision: review it as one.
+FILE_HELPERS = frozenset(
+    {
+        "_read_fit_config",
+        "_write_fit_config",
+        "_resolve_download_dir",
+        "_resolve_gpx_output_path",
+    }
+)
+
 WORKOUTS_TOOLS = CORE_TOOLS | frozenset(
     {
         # workouts
@@ -239,6 +253,22 @@ NUTRITION_TOOLS = CORE_TOOLS | frozenset(
     }
 )
 
+# Tools that read or write the local filesystem of the server process. They
+# take a path the model chooses, so in a hosted setup one member's process
+# could reach another member's files. GARMIN_FILE_TOOLS=off removes them after
+# every profile, allowlist and denylist has been applied. The FIT tools
+# (get_activity_fit_data, get_activity_fit_messages) are not here: they parse
+# the file in memory and never touch the filesystem. A guard test
+# (tests/unit/test_file_access_guard.py) fails when any other tool does.
+FILE_TOOLS = frozenset(
+    {
+        "set_fit_download_dir",
+        "download_activity_file",
+        "download_course_gpx",
+        "upload_course",
+    }
+)
+
 # None means "every tool", the default.
 TOOL_PROFILES = {
     "all": None,
@@ -276,3 +306,23 @@ def resolve_tool_profile(value):
     if "all" in names:
         return None
     return frozenset().union(*(TOOL_PROFILES[name] for name in names))
+
+
+def resolve_file_tools(value):
+    """Turn a GARMIN_FILE_TOOLS value into True (file tools on) or False (off).
+
+    Unset (None) means on, the fork's default for its other users. A value that
+    is set is trimmed and lower-cased and must be ``on`` or ``off``; an empty
+    value or anything else raises ValueError naming the variable, so a typo
+    never silently leaves the file tools on.
+    """
+    if value is None:
+        return True
+    normalized = value.strip().lower()
+    if normalized == "on":
+        return True
+    if normalized == "off":
+        return False
+    raise ValueError(
+        f"Invalid GARMIN_FILE_TOOLS {value!r}; expected 'on' or 'off'"
+    )

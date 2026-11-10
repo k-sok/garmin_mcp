@@ -38,7 +38,7 @@ from garmin_mcp import courses
 from garmin_mcp import activity_analysis
 from garmin_mcp import calendar_events
 from garmin_mcp.tool_annotations import annotations_for
-from garmin_mcp.tool_profiles import resolve_tool_profile
+from garmin_mcp.tool_profiles import FILE_TOOLS, resolve_file_tools, resolve_tool_profile
 from garmin_mcp.write_errors import _upstream
 
 
@@ -133,6 +133,15 @@ def _resolve_tool_filters():
 def _resolve_tool_profile():
     """Read GARMIN_TOOL_PROFILE; None means every tool. Unknown names raise."""
     return resolve_tool_profile(os.getenv("GARMIN_TOOL_PROFILE"))
+
+
+def _resolve_file_tools() -> bool:
+    """Read GARMIN_FILE_TOOLS; False means the file tools are removed.
+
+    Read when the server is built, so each process has its own value. Unset is
+    on; an empty or unknown value raises ValueError naming the variable.
+    """
+    return resolve_file_tools(os.getenv("GARMIN_FILE_TOOLS"))
 
 
 _VALID_TRANSPORTS = ("stdio", "streamable-http", "sse")
@@ -514,8 +523,11 @@ class _ToolFilter:
     attribute access (``run``, ``resource``, ...) passes through to the app.
     """
 
-    def __init__(self, app, enabled, disabled, profile=None):
+    def __init__(self, app, enabled, disabled, profile=None, file_tools=True):
         self._app = app
+        # False removes FILE_TOOLS after profile, allowlist and denylist.
+        self._file_tools = file_tools
+        self._file_tools_removed = set()
         self._enabled = enabled
         self._disabled = disabled
         self._profile = profile  # None = every tool; else the profile's names
@@ -524,6 +536,10 @@ class _ToolFilter:
 
     def _allowed(self, name):
         name = name.lower()
+        if not self._file_tools and name in FILE_TOOLS:
+            # Applied last: no profile or allowlist brings these back.
+            self._file_tools_removed.add(name)
+            return False
         if self._profile is not None:
             # Profile first; the allowlist adds to it, the denylist removes.
             return (
@@ -561,6 +577,27 @@ class _ToolFilter:
             return fn  # skip registration; tool never reaches the LLM
 
         return wrapper
+
+    def add_tool(self, fn, name=None, *args, **kwargs):
+        """Register a tool object directly, through the same filter as ``tool()``.
+
+        FastMCP.add_tool would otherwise pass straight through ``__getattr__``
+        and bring back a file tool that GARMIN_FILE_TOOLS=off removed, or a tool
+        the profile and denylist exclude.
+        """
+        tool_name = name or getattr(fn, "__name__", "")
+        self._seen.add(tool_name.lower())
+        if not self._file_tools and tool_name.lower() in FILE_TOOLS:
+            raise ValueError(
+                f"Refusing to register file tool {tool_name!r}: GARMIN_FILE_TOOLS is off"
+            )
+        if not self._allowed(tool_name):
+            return None
+        return self._app.add_tool(fn, name, *args, **kwargs)
+
+    def file_tools_removed_count(self):
+        """How many file tools GARMIN_FILE_TOOLS=off kept from registering."""
+        return len(self._file_tools_removed)
 
     def unknown_filter_names(self):
         """Configured names that never matched a real tool (likely typos)."""
@@ -780,6 +817,7 @@ def main():
     try:
         email, password = load_credentials()
         profile_tools = _resolve_tool_profile()
+        file_tools = _resolve_file_tools()
         enabled_tools, disabled_tools = _resolve_tool_filters()
         transport, http_host, http_port = _parse_transport_config()
         stateless_http = _resolve_stateless_http()
@@ -823,7 +861,9 @@ def main():
         port=http_port,
         stateless_http=stateless_http,
     )
-    app = _ToolFilter(fastmcp, enabled_tools, disabled_tools, profile_tools)
+    app = _ToolFilter(
+        fastmcp, enabled_tools, disabled_tools, profile_tools, file_tools=file_tools
+    )
     if profile_tools is not None:
         profile_name = os.getenv("GARMIN_TOOL_PROFILE", "").strip().lower()
         print(
@@ -858,6 +898,26 @@ def main():
 
     # Register resources (workout templates)
     app = workout_templates.register_resources(app)
+
+    if not file_tools:
+        # Belt and braces: whatever path a tool took into the app, none of the
+        # file tools may be registered when the switch is off.
+        leaked = sorted(
+            tool.name for tool in asyncio.run(fastmcp.list_tools())
+            if tool.name.lower() in FILE_TOOLS
+        )
+        if leaked:
+            print(
+                "GARMIN_FILE_TOOLS is off but file tool(s) are registered: "
+                + ", ".join(leaked),
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(
+            f"File tools off: {app.file_tools_removed_count()} tool(s) that touch "
+            "local files were not registered.",
+            file=sys.stderr,
+        )
 
     # Warn about filter entries that matched no tool (most likely typos)
     unknown = app.unknown_filter_names()
