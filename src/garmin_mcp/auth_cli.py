@@ -5,7 +5,11 @@ before running the MCP server in non-interactive environments like Claude Deskto
 """
 
 import argparse
+import contextlib
+import json
+import logging
 import os
+import stat
 import sys
 import getpass
 import base64
@@ -32,8 +36,14 @@ def get_mfa() -> str:
     return input("Enter MFA code: ")
 
 
-def get_credentials() -> tuple[str, str]:
+def get_credentials(
+    heading: str = "Garmin Connect Credentials",
+    email_prompt: str = "Email: ",
+    password_prompt: str = "Password: ",
+) -> tuple[str, str]:
     """Get credentials from environment variables or user input.
+
+    The prompts are parameters so that ``--export`` can ask in German.
 
     Returns:
         Tuple of (email, password)
@@ -66,14 +76,14 @@ def get_credentials() -> tuple[str, str]:
 
     # Prompt for missing credentials
     if not email:
-        print("\nGarmin Connect Credentials")
+        print(f"\n{heading}")
         print("-" * 40)
-        email = input("Email: ").strip()
+        email = input(email_prompt).strip()
         if not email:
             raise ValueError("Email is required")
 
     if not password:
-        password = getpass.getpass("Password: ")
+        password = getpass.getpass(password_prompt)
         if not password:
             raise ValueError("Password is required")
 
@@ -282,6 +292,190 @@ def authenticate(token_path: str, token_base64_path: str, force_reauth: bool = F
 
         return False
 
+EXPORT_FILE_NAME = "garmin-zugang.json"
+_EXPORT_KEYS = ("di_token", "di_refresh_token", "di_client_id")
+_REPARSE_POINT = 0x400  # FILE_ATTRIBUTE_REPARSE_POINT: symlinks and junctions on Windows
+
+# The texts of ``--export``. English is the default and lives here; ``--lang de`` selects the German texts of
+# the fork-only module ``garmin_mcp.export_texts_de``. Placeholders: {path}, {parent}, {name}.
+EXPORT_LANGUAGES = ("en", "de")
+EXPORT_TEXTS_EN = {
+    "banner": "Garmin MCP Pre-Authentication Tool",
+    "heading": "Garmin credentials",
+    "email_prompt": "Garmin email: ",
+    "password_prompt": "Garmin password (not shown): ",
+    "logging_in": "Logging in to Garmin Connect...",
+    "mfa_hint": (
+        "Garmin just sent you a code by e-mail. Look in your inbox, including the spam folder (or in your "
+        "authenticator app, if you set one up). The code is valid for only a few minutes."
+    ),
+    "mfa_prompt": "Code from Garmin: ",
+    "folder_missing": "The folder '{parent}' does not exist.",
+    "is_link": "'{path}' is a link; refusing to write through it.",
+    "not_regular": "'{path}' exists and is not a regular file.",
+    "exists": "'{path}' already exists. Use --force to replace it.",
+    "not_regular_replace": "'{path}' is not a regular file; refusing to replace it.",
+    "no_profile": "Garmin returned no profile; the login cannot be used.",
+    "no_tokens": "Garmin did not issue the expected credentials.",
+    "creds_missing": "Email or password is missing (or given twice).",
+    "login_failed": "Login failed. Check email, password and the code.",
+    "too_many": "Too many requests. Wait a few minutes and try again.",
+    "connection": "Garmin could not be reached or answered unexpectedly.",
+    "write_failed": "The file '{path}' could not be written.",
+    "unexpected": "Unexpected error ({name}).",
+    "done": "Done. The file is here: {path}. Upload it to fatgu.ai and delete it afterwards.",
+}
+
+
+def export_texts(lang: str) -> dict[str, str]:
+    """The texts of ``--export`` in ``lang``; an unknown language is an error."""
+    if lang == "en":
+        return EXPORT_TEXTS_EN
+    if lang == "de":
+        from garmin_mcp.export_texts_de import TEXTS
+
+        return TEXTS
+    raise ValueError(f"unknown language {lang!r}")
+
+
+class ExportError(Exception):
+    """The export cannot proceed; the message is safe to print."""
+
+
+def get_export_mfa(texts: dict[str, str] = EXPORT_TEXTS_EN) -> str:
+    """Asks for the Garmin code, after saying where it comes from."""
+    print("\n" + texts["mfa_hint"])
+    return input(texts["mfa_prompt"])
+
+
+def default_export_path() -> str:
+    """``~/Downloads/garmin-zugang.json``, with ``~`` taken from ``HOME`` (or the profile)."""
+    return os.path.join(os.path.expanduser("~"), "Downloads", EXPORT_FILE_NAME)
+
+
+def _is_link(st: os.stat_result) -> bool:
+    """A symlink, or on Windows any reparse point (junction, mount point)."""
+    return stat.S_ISLNK(st.st_mode) or bool(
+        getattr(st, "st_file_attributes", 0) & _REPARSE_POINT
+    )
+
+
+def _check_export_target(path: str, force: bool, texts: dict[str, str]) -> None:
+    """Refuse a bad target before the member types a password.
+
+    Never follows a link, never replaces anything without ``force``, and with
+    ``force`` replaces only a regular file.
+    """
+    parent = os.path.dirname(path) or "."
+    if not os.path.isdir(parent):
+        raise ExportError(texts["folder_missing"].format(parent=parent))
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if _is_link(st):
+        raise ExportError(texts["is_link"].format(path=path))
+    if not stat.S_ISREG(st.st_mode):
+        raise ExportError(texts["not_regular"].format(path=path))
+    if not force:
+        raise ExportError(texts["exists"].format(path=path))
+
+
+def _write_export(
+    path: str, content: str, force: bool, texts: dict[str, str] = EXPORT_TEXTS_EN
+) -> None:
+    """Write ``content`` to a new file readable by the owner only (POSIX)."""
+    if force:
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            pass
+        else:
+            if _is_link(st) or not stat.S_ISREG(st.st_mode):
+                raise ExportError(texts["not_regular_replace"].format(path=path))
+            os.unlink(path)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content.encode("utf-8"))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
+
+
+def export_token_file(
+    path: str, force: bool = False, is_cn: bool = False, lang: str = "en"
+) -> bool:
+    """Log in afresh and write only the token JSON to ``path`` (L64).
+
+    Always a password login in memory: saved tokens (``GARMINTOKENS``) are never
+    read, no token store, temporary folder or base64 copy is written, and the
+    folder's mode is left alone. The login is verified by reading the profile
+    with the same client, and that client's ``dumps()`` is what is written, so
+    no second refresh can invalidate the exported tokens. Prints the path,
+    never a token, a password or a library error text; the library's own log
+    lines (they carry Garmin's error text) are switched off for the run.
+    """
+    texts = export_texts(lang)
+    path = os.path.abspath(os.path.expanduser(path))
+    previously_disabled = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        return _export(path, force, is_cn, texts)
+    finally:
+        logging.disable(previously_disabled)
+
+
+def _export(path: str, force: bool, is_cn: bool, texts: dict[str, str]) -> bool:
+    try:
+        _check_export_target(path, force, texts)
+        email, password = get_credentials(
+            texts["heading"], texts["email_prompt"], texts["password_prompt"]
+        )
+        garmin = Garmin(email=email, password=password, is_cn=is_cn)
+        client = garmin.client
+        print("\n" + texts["logging_in"])
+        result, state = client.login(email, password, return_on_mfa=True)
+        if result == "needs_mfa":
+            client.resume_login(state, get_export_mfa(texts))
+        profile = client.connectapi("/userprofile-service/socialProfile")
+        if not isinstance(profile, dict) or not profile:
+            raise ExportError(texts["no_profile"])
+        data = json.loads(client.dumps())
+        if not all(isinstance(data.get(key), str) and data[key] for key in _EXPORT_KEYS):
+            raise ExportError(texts["no_tokens"])
+        _write_export(
+            path, json.dumps({key: data[key] for key in _EXPORT_KEYS}), force, texts
+        )
+    except ExportError as e:
+        print(f"\n✗ {e}", file=sys.stderr)
+        return False
+    except ValueError:
+        print("\n✗ " + texts["creds_missing"], file=sys.stderr)
+        return False
+    except GarminConnectAuthenticationError:
+        print("\n✗ " + texts["login_failed"], file=sys.stderr)
+        return False
+    except GarminConnectTooManyRequestsError:
+        print("\n✗ " + texts["too_many"], file=sys.stderr)
+        return False
+    except GarminConnectConnectionError:
+        print("\n✗ " + texts["connection"], file=sys.stderr)
+        return False
+    except OSError:
+        print("\n✗ " + texts["write_failed"].format(path=path), file=sys.stderr)
+        return False
+    except Exception as e:
+        print("\n✗ " + texts["unexpected"].format(name=e.__class__.__name__), file=sys.stderr)
+        return False
+    print("\n" + texts["done"].format(path=path))
+    return True
+
 
 def verify_tokens(token_path: str, is_cn: bool = False) -> bool:
     """Verify existing tokens are valid.
@@ -399,6 +593,9 @@ Examples:
 
   # Use custom token location
   garmin-mcp-auth --token-path ~/.garmin_tokens
+
+  # Write only a token file for uploading to a website (no token store is kept)
+  garmin-mcp-auth --export
         """
     )
 
@@ -437,6 +634,31 @@ Examples:
         help="Use Garmin Connect China (garmin.cn) instead of the international version"
     )
 
+    parser.add_argument(
+        "--export",
+        nargs="?",
+        const=default_export_path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Log in afresh and write only the token file to PATH (default "
+            f"~/Downloads/{EXPORT_FILE_NAME}), keeping no token store; for uploading to the website"
+        ),
+    )
+
+    parser.add_argument(
+        "--lang",
+        choices=EXPORT_LANGUAGES,
+        default="en",
+        help="With --export: the language of its prompts and messages (default: en)",
+    )
+
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="With --export: replace an existing regular file at PATH",
+    )
+
     args = parser.parse_args()
 
     # Get token paths
@@ -450,10 +672,19 @@ Examples:
         is_cn = os.getenv("GARMIN_IS_CN", "false").lower() in ("true", "1", "yes")
 
     print("\n" + "=" * 60)
-    print("Garmin MCP Pre-Authentication Tool")
+    print(
+        export_texts(args.lang)["banner"]
+        if args.export is not None
+        else "Garmin MCP Pre-Authentication Tool"
+    )
     if is_cn:
         print("Region: China (garmin.cn)")
     print("=" * 60)
+
+    # Export mode: a fresh login, only the token file, no store
+    if args.export is not None:
+        target = args.export() if callable(args.export) else args.export
+        sys.exit(0 if export_token_file(target, args.force, is_cn, args.lang) else 1)
 
     # Diagnose mode: explain what the server will find at the token path
     if args.diagnose:
