@@ -40,6 +40,10 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENTRYPOINT ["docker-entrypoint.sh"]
 
-# Health check (optional - adjust based on your needs)
-# HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-#   CMD python -c "import sys; sys.exit(0)"
+# Health check: probes /healthz when an HTTP transport is configured and passes
+# under stdio. Standard library only, because the slim image has no curl/wget
+# (see docker-healthcheck.py). /readyz is not used: it stays 503 until a Garmin
+# login succeeded.
+COPY docker-healthcheck.py /usr/local/bin/docker-healthcheck.py
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD ["python", "/usr/local/bin/docker-healthcheck.py"]
