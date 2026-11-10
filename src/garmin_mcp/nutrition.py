@@ -10,7 +10,7 @@ from typing import Optional
 import requests
 from garminconnect import GarminConnectConnectionError
 
-from garmin_mcp.write_errors import WriteTracker
+from garmin_mcp.write_errors import ErrorText, WriteTracker
 
 # The garmin_client will be set by the main file
 garmin_client = None
@@ -1361,6 +1361,6 @@ def register_tools(app):
                         "The custom food was created but not logged. Check the custom "
                         "food library before retrying; reuse the existing food to log it."
                     )
-            return json.dumps(error, indent=2)
+            return ErrorText(json.dumps(error, indent=2))
 
     return app

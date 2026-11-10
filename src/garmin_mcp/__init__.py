@@ -15,6 +15,7 @@ import threading
 import anyio
 import requests
 from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult, TextContent
 
 from garminconnect import Garmin, GarminConnectAuthenticationError, GarminConnectConnectionError, GarminConnectTooManyRequestsError
 
@@ -39,7 +40,10 @@ from garmin_mcp import activity_analysis
 from garmin_mcp import calendar_events
 from garmin_mcp.tool_annotations import annotations_for
 from garmin_mcp.tool_profiles import FILE_TOOLS, resolve_file_tools, resolve_tool_profile
-from garmin_mcp.write_errors import _upstream
+from garmin_mcp import status_report
+from garmin_mcp.write_errors import ErrorText, _upstream
+
+status_report.install()
 
 
 def is_interactive_terminal() -> bool:
@@ -515,6 +519,36 @@ def _off_event_loop(fn):
     return run_off_loop
 
 
+def _mark_errors(fn):
+    """Answer with ``isError`` when a tool returns the text of a failed write.
+
+    ``WriteTracker.error`` returns ``ErrorText``, a string. Here it becomes a
+    tool result marked as an error that still carries the same text, so a
+    client and the hosted gateway can tell a failed write from a success.
+    """
+
+    def _mark(result):
+        if isinstance(result, ErrorText):
+            return CallToolResult(
+                isError=True, content=[TextContent(type="text", text=str(result))]
+            )
+        return result
+
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def marked_async(*args, **kwargs):
+            return _mark(await fn(*args, **kwargs))
+
+        return marked_async
+
+    @functools.wraps(fn)
+    def marked(*args, **kwargs):
+        return _mark(fn(*args, **kwargs))
+
+    return marked
+
+
 class _ToolFilter:
     """Wraps a FastMCP app to conditionally register tools by function name.
 
@@ -572,7 +606,7 @@ class _ToolFilter:
                 else:
                     kwargs.setdefault("annotations", annotations)
                 decorator = self._app.tool(*args, **kwargs)
-                decorator(_off_event_loop(fn))
+                decorator(_mark_errors(_off_event_loop(fn)))
                 return fn
             return fn  # skip registration; tool never reaches the LLM
 

@@ -75,6 +75,15 @@ def _connection_never_opened(exc):
     return isinstance(reason, NewConnectionError)
 
 
+class ErrorText(str):
+    """The JSON text of a failed write, marked so the server answers with ``isError``.
+
+    A tool returns it like any string. ``garmin_mcp._mark_errors`` turns it into
+    a tool result with ``isError`` set, which keeps the text and lets a client
+    (and a gateway in front of the server) tell a failed write from a success.
+    """
+
+
 class WriteTracker:
     """Tracks one write tool call so a failure can say whether it committed.
 
@@ -135,7 +144,7 @@ class WriteTracker:
         return "internal", "unknown" if self.sent else False
 
     def error(self, exc):
-        """Log ``exc`` with a correlation ID and return a JSON error result."""
+        """Log ``exc`` with a correlation ID and return the JSON error as ``ErrorText``."""
         correlation_id = uuid.uuid4().hex[:12]
         stage, committed = self._classify(exc)
         status, body = _upstream(exc)
@@ -165,4 +174,4 @@ class WriteTracker:
             )
         elif committed is False:
             result["hint"] = "Nothing was written, so a retry cannot create a duplicate."
-        return json.dumps(result, indent=2)
+        return ErrorText(json.dumps(result, indent=2))

@@ -587,6 +587,7 @@ NOT_TOOL_CODE = {
     "seed_tokens": "container entrypoint helper; writes the token store by design",
     "token_utils": "token store handling for the entry point and the CLIs",
     "http_auth": "HTTP bearer middleware, installed by the entry point only",
+    "status_report": "writes GARMIN_STATUS_FILE for the host; installed by the package, no tool imports it",
 }
 
 
