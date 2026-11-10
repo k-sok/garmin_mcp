@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 from pathlib import Path
 from typing import Tuple
 
@@ -44,6 +45,97 @@ def secure_token_dir(path: str) -> None:
                 os.chmod(entry.path, 0o600)
     else:
         os.chmod(expanded, 0o600)
+
+
+class TokenStoreError(Exception):
+    """The token store itself cannot be trusted (it is a symlink)."""
+
+
+_MAX_STORE_DEPTH = 8
+
+
+def _tighten(path: str, mode: int, problems: list) -> None:
+    """chmod one entry, never through a symlink; a failure is collected, not raised."""
+    try:
+        if stat.S_ISLNK(os.lstat(path).st_mode):
+            return
+        os.chmod(path, mode)
+    except OSError as exc:
+        problems.append(f"{path}: {exc.strerror or exc}")
+
+
+def _tighten_tree(directory: str, problems: list, depth: int = 0) -> None:
+    _tighten(directory, 0o700, problems)
+    try:
+        with os.scandir(directory) as scan:
+            entries = list(scan)
+    except OSError as exc:
+        problems.append(f"{directory}: {exc.strerror or exc}")
+        return
+    # The token file first: it is the one that matters if anything fails.
+    entries.sort(key=lambda entry: (entry.name != TOKEN_FILE_NAME, entry.name))
+    for entry in entries:
+        try:
+            if entry.is_symlink():
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                if depth < _MAX_STORE_DEPTH:
+                    _tighten_tree(entry.path, problems, depth + 1)
+            elif entry.is_file(follow_symlinks=False):
+                _tighten(entry.path, 0o600, problems)
+        except OSError as exc:
+            problems.append(f"{entry.path}: {exc.strerror or exc}")
+
+
+def secure_token_store(path: str, extra_files=()) -> list:
+    """Tighten a token store to 0700 (directories) and 0600 (files), entry by entry.
+
+    Every entry has its own try, so one that cannot be changed (another owner,
+    a read-only mount) does not stop the others. Symlinks are skipped, so a
+    link inside the store cannot be used to change the mode of a file outside
+    it, and a store path that is itself a symlink is refused with
+    ``TokenStoreError``. ``extra_files`` are single files (the legacy base64
+    export) tightened the same way. Returns the list of entries that failed.
+    """
+    expanded = resolve_token_path(path)
+    if os.path.islink(expanded):
+        raise TokenStoreError(f"token store '{expanded}' is a symlink; refusing to use it")
+    problems: list = []
+    if os.path.isdir(expanded):
+        _tighten_tree(expanded, problems)
+    elif os.path.exists(expanded):
+        _tighten(expanded, 0o600, problems)
+    for extra in extra_files:
+        extra = resolve_token_path(extra)
+        if os.path.lexists(extra):
+            _tighten(extra, 0o600, problems)
+    return problems
+
+
+def verify_token_store(path: str) -> list:
+    """Check, with lstat, that the store and its token file are private and ours.
+
+    Returns one message per problem: a mode that grants anything to group or
+    others, or an owner other than this process's effective user.
+    """
+    expanded = resolve_token_path(path)
+    if not os.path.lexists(expanded):
+        return []
+    targets = [expanded]
+    token_file = os.path.join(expanded, TOKEN_FILE_NAME)
+    if os.path.isdir(expanded) and os.path.lexists(token_file):
+        targets.append(token_file)
+    euid = os.geteuid() if hasattr(os, "geteuid") else None
+    problems = []
+    for target in targets:
+        info = os.lstat(target)
+        if info.st_mode & 0o077:
+            problems.append(
+                f"{target} has mode {oct(stat.S_IMODE(info.st_mode))}, open to other users"
+            )
+        if euid is not None and info.st_uid != euid:
+            problems.append(f"{target} is owned by uid {info.st_uid}, not by this process")
+    return problems
 
 
 def get_token_path() -> str:

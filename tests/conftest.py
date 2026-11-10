@@ -1,10 +1,40 @@
 """
 Shared pytest fixtures for Garmin MCP testing
 """
+import os
+
 import pytest
 from unittest.mock import Mock
 from datetime import datetime, timedelta
 from mcp.server.fastmcp import FastMCP
+
+
+@pytest.fixture(autouse=True)
+def _restore_umask():
+    """main() and seed_tokens.main() set umask 077 for the whole process.
+
+    Put the caller's umask back so one test cannot change the file modes
+    another test creates.
+    """
+    previous = os.umask(0)
+    os.umask(previous)
+    yield
+    os.umask(previous)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(request, tmp_path_factory, monkeypatch):
+    """Keep tests off the real token store and FIT config.
+
+    main() tightens whatever token store the environment names, so a test that
+    runs it must never resolve to the developer's own ~/.garminconnect. e2e
+    tests need the real one and are left alone.
+    """
+    if request.node.get_closest_marker("e2e"):
+        return
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
+    for name in ("GARMINTOKENS", "GARMINTOKENS_BASE64", "GARMIN_FIT_CONFIG"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture

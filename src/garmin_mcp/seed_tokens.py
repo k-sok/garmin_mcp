@@ -23,7 +23,14 @@ import os
 import sys
 from pathlib import Path
 
-from garmin_mcp.token_utils import TOKEN_FILE_NAME, get_token_path
+from garmin_mcp.token_utils import (
+    TOKEN_FILE_NAME,
+    TokenStoreError,
+    get_token_base64_path,
+    get_token_path,
+    secure_token_store,
+    verify_token_store,
+)
 
 ENV_VAR = "GARMIN_TOKENS_JSON"
 MARKER_NAME = ".garmin_tokens_json.sha256"
@@ -93,10 +100,33 @@ def seed(environ=None) -> str:
 
 
 def main() -> int:
+    # Owner-only from the first byte, whatever the caller's umask (L48).
+    os.umask(0o077)
     try:
+        store = get_token_path()
+        # Before writing: a store that is a symlink is refused, so the seed can
+        # never be written through it into somewhere else.
+        secure_token_store(store)
         status = seed()
+        if status != "unset":
+            failed = secure_token_store(store, [get_token_base64_path()])
+            problems = failed + verify_token_store(store)
+            if problems:
+                for problem in problems:
+                    print(f"ERROR: token store not private: {problem}", file=sys.stderr)
+                return 1
     except ValueError as exc:
         print(f"ERROR: {ENV_VAR}: {exc}", file=sys.stderr)
+        return 1
+    except TokenStoreError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(
+            f"ERROR: {ENV_VAR}: cannot write the token store: "
+            f"{exc.strerror or 'I/O error'} ({exc.filename})",
+            file=sys.stderr,
+        )
         return 1
     if status != "unset":
         print(f"{ENV_VAR}: token store {status} ({get_token_path()})", file=sys.stderr)

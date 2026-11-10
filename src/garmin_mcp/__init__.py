@@ -790,8 +790,44 @@ def init_api(email, password, tokenstore=None, tokenstore_base64=None, is_cn=Non
     return garmin
 
 
+def _secure_existing_token_store(file_tools: bool = True) -> None:
+    """Tighten an existing token store to 0700/0600 before anything reads it.
+
+    Runs on every start path, not only after a password login: a store written
+    by garminconnect <= 0.3.4 (PYSEC-2026-3467) or by an older run under a loose
+    umask is world-readable. Each entry is tightened on its own, symlinks are
+    skipped and a store path that is a symlink is refused (exit 1). Afterwards
+    the directory and the token file are checked with lstat: if either is open
+    to others or owned by someone else, a hosted start (GARMIN_FILE_TOOLS=off)
+    exits 1 naming the store, while with file tools on it only warns.
+    """
+    token_path = token_utils.get_token_path()
+    try:
+        failed = token_utils.secure_token_store(
+            token_path, [token_utils.get_token_base64_path()]
+        )
+        still_open = token_utils.verify_token_store(token_path)
+    except token_utils.TokenStoreError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+    for problem in failed:
+        print(f"WARNING: could not restrict {problem}", file=sys.stderr)
+    if still_open:
+        message = f"token store '{token_path}' is not private: " + "; ".join(still_open)
+        if not file_tools:
+            print(f"ERROR: {message}", file=sys.stderr)
+            sys.exit(1)
+        print(f"WARNING: {message}", file=sys.stderr)
+
+
 def main():
     """Initialize the MCP server and register all tools"""
+
+    # Token files must never be readable by another user, whatever the library
+    # does when it writes or refreshes them (garminconnect <= 0.3.4 writes them
+    # 0644 under umask 022, PYSEC-2026-3467). First thing, before any file is
+    # created by this process or a library it calls.
+    os.umask(0o077)
 
     # On Windows, stdout runs in text mode and translates \n to \r\n, which
     # breaks the MCP stdio framing that Claude Desktop and other clients expect.
@@ -824,6 +860,8 @@ def main():
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
+
+    _secure_existing_token_store(file_tools)
 
     # Start Garmin login in the background so it never blocks the MCP
     # handshake (issue #255). Tool calls block on it individually instead,
