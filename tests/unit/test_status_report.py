@@ -206,3 +206,52 @@ def test_a_failed_write_is_marked_as_an_error():
     payload = json.loads(failed.content[0].text)
     assert payload["status"] == "error" and payload["upstream_status"] == 400
     assert not isinstance(ok, type(failed))
+
+
+def _call(app, name, args=None):
+    import anyio
+
+    async def run():
+        return await app.call_tool(name, args or {})
+
+    return anyio.run(run)
+
+
+def test_a_failed_write_of_a_tool_without_the_write_tracker_is_marked_as_an_error():
+    """upload_workout answers a failure as plain "Error ..." text; the writing tool's result is marked."""
+    from unittest.mock import Mock
+
+    from garmin_mcp import workouts
+
+    client = Mock()
+    client.upload_workout.side_effect = GarminConnectConnectionError("API Error 500 - boom")
+    workouts.configure(client)
+    app = workouts.register_tools(_ToolFilter(FastMCP("test"), set(), set()))
+    workout = {
+        "workoutName": "w",
+        "sportType": {"sportTypeId": 1, "sportTypeKey": "running"},
+        "workoutSegments": [],
+    }
+
+    failed = _call(app, "upload_workout", {"workout_data": workout})
+
+    assert failed.isError is True
+    assert failed.content[0].text.startswith("Error uploading workout")
+
+    client.upload_workout.side_effect = None
+    client.upload_workout.return_value = {"workoutId": 7, "workoutName": "w"}
+    ok = _call(app, "upload_workout", {"workout_data": workout})
+
+    assert getattr(ok, "isError", False) is False
+
+
+def test_a_reading_tool_is_not_judged_by_the_words_of_its_text():
+    app = _ToolFilter(FastMCP("test"), set(), set())
+
+    @app.tool()
+    async def get_activities() -> str:
+        return "Error is a word in an activity's name"
+
+    result = _call(app, "get_activities")
+
+    assert getattr(result, "isError", False) is False

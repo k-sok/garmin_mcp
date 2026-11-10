@@ -38,7 +38,7 @@ from garmin_mcp import workout_builders
 from garmin_mcp import courses
 from garmin_mcp import activity_analysis
 from garmin_mcp import calendar_events
-from garmin_mcp.tool_annotations import annotations_for
+from garmin_mcp.tool_annotations import READ_ONLY_TOOLS, annotations_for
 from garmin_mcp.tool_profiles import FILE_TOOLS, resolve_file_tools, resolve_tool_profile
 from garmin_mcp import status_report
 from garmin_mcp.write_errors import ErrorText, _upstream
@@ -519,16 +519,21 @@ def _off_event_loop(fn):
     return run_off_loop
 
 
-def _mark_errors(fn):
+def _mark_errors(fn, writing=False):
     """Answer with ``isError`` when a tool returns the text of a failed write.
 
-    ``WriteTracker.error`` returns ``ErrorText``, a string. Here it becomes a
-    tool result marked as an error that still carries the same text, so a
-    client and the hosted gateway can tell a failed write from a success.
+    ``WriteTracker.error`` returns ``ErrorText``, a string. Most other writing
+    tools (not in READ_ONLY_TOOLS) report a failure as a plain text that begins
+    with "Error". Here both become a tool result marked as an error that still
+    carries the same text, so a client and the hosted gateway can tell a failed
+    write from a success. A reading tool's text is never judged by its words.
     """
 
     def _mark(result):
-        if isinstance(result, ErrorText):
+        failed = isinstance(result, ErrorText) or (
+            writing and isinstance(result, str) and result.startswith("Error")
+        )
+        if failed:
             return CallToolResult(
                 isError=True, content=[TextContent(type="text", text=str(result))]
             )
@@ -606,7 +611,9 @@ class _ToolFilter:
                 else:
                     kwargs.setdefault("annotations", annotations)
                 decorator = self._app.tool(*args, **kwargs)
-                decorator(_mark_errors(_off_event_loop(fn)))
+                decorator(
+                    _mark_errors(_off_event_loop(fn), writing=name not in READ_ONLY_TOOLS)
+                )
                 return fn
             return fn  # skip registration; tool never reaches the LLM
 
