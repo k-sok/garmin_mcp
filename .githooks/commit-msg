@@ -1,0 +1,22 @@
+#!/bin/sh
+# Fork rule: no AI attribution in commit messages (work here goes upstream to
+# Taxuspt/garmin_mcp, whose maintainer does not accept it). Human co-authors
+# stay allowed. Activate with: git config core.hooksPath .githooks
+msg=$(grep -v '^#' "$1")
+
+# AI tools as co-author: by name (before the address) or by their address.
+ai_names='claude|copilot|openai|chatgpt|gemini|cursor|codex'
+ai_addresses='noreply@anthropic\.com|@openai\.com|copilot@github\.com|@users\.noreply\.github\.com.*(copilot|claude)'
+if printf '%s\n' "$msg" | grep -Eiq "co-authored-by:[^<]*($ai_names)|co-authored-by:.*($ai_addresses)"; then
+    echo "commit-msg: remove the AI Co-Authored-By line (fork rule, see .claude/CLAUDE.md)" >&2
+    exit 1
+fi
+if printf '%s\n' "$msg" | grep -Eiq 'generated with \[claude'; then
+    echo "commit-msg: remove the 'Generated with Claude' line (fork rule, see .claude/CLAUDE.md)" >&2
+    exit 1
+fi
+if printf '%s\n' "$msg" | grep -Eiq 'claude\.ai/code'; then
+    echo "commit-msg: remove the claude.ai/code session link (fork rule, see .claude/CLAUDE.md)" >&2
+    exit 1
+fi
+exit 0
