@@ -154,7 +154,13 @@ def test_proxy_classifies_real_library_http_error_shape(status, hint):
         f"API Error {status} - rejected"
     )
     proxy = _GarminProxy(garmin, timeout=0)
-    with pytest.raises(GarminConnectConnectionError) as caught:
+    # garminconnect >= 0.3.5 types 401 and 429 itself; the proxy keeps that
+    # type and adds the hint. Every other status stays a ConnectionError.
+    expected = {
+        401: GarminConnectAuthenticationError,
+        429: GarminConnectTooManyRequestsError,
+    }.get(status, GarminConnectConnectionError)
+    with pytest.raises(expected) as caught:
         proxy.connectapi("/test")
     assert hint in str(caught.value)
     assert "check your network" not in str(caught.value)

@@ -75,9 +75,9 @@ Run the full suite (not just the changed module) to catch regressions.
 ## Key version constraints
 
 ```
-garminconnect==0.3.2   ← pinned; upgrade is a design decision
-mcp>=1.28.1,<2         ← mcp 2.x renamed FastMCP; cap until ported
-requires-python>=3.10  ← 3.12 minimum is a pending design decision
+garminconnect==0.3.5   ← pinned; upgrade is a design decision
+mcp>=1.30.0,<2         ← mcp 2.x renamed FastMCP; cap until ported
+requires-python>=3.12  ← garminconnect 0.3.5 needs 3.12 (raised from 3.10)
 ```
 
 ## Design decisions — always ask the user

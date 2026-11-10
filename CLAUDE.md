@@ -23,7 +23,7 @@ These files are your source of truth for:
 
 ### Library Version
 
-Currently using: `garminconnect==0.3.2` (see [pyproject.toml](pyproject.toml))
+Currently using: `garminconnect==0.3.5` (see [pyproject.toml](pyproject.toml))
 
 ### Important Note
 
@@ -285,8 +285,8 @@ Check logs at:
 
 ## Key Dependencies
 
-- `garminconnect==0.3.2` - Garmin Connect API wrapper
-- `mcp>=1.23.0` - Model Context Protocol SDK
+- `garminconnect==0.3.5` - Garmin Connect API wrapper
+- `mcp>=1.30.0,<2` - Model Context Protocol SDK
 - `fitparse>=1.2.0` - FIT file parsing for activity analysis
 - `python-dotenv==1.2.2` - Environment variable management
 - `requests==2.33.0` - HTTP client
