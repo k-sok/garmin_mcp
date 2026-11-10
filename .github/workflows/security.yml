@@ -8,26 +8,33 @@ on:
     - cron: '0 9 * * 1'
   workflow_dispatch:
 
+# Read-only token: nothing here pushes, comments or releases.
+permissions:
+  contents: read
+
 jobs:
   dependency-check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v5
+      uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
 
     - name: Set up Python
       run: uv python install 3.13
 
-    - name: Check for dependency vulnerabilities
+    - name: Audit locked dependencies for known vulnerabilities
+      # Exports exactly what uv.lock pins for the runtime (with hashes, without
+      # this project) and fails on any known vulnerability. An ignored advisory
+      # needs a comment here with its reason and risk ID.
       run: |
-        uv sync
-        uv pip list
-        echo "Checking for known security vulnerabilities..."
-        # Note: Add pip-audit or safety scan here if desired
+        uv export --frozen --no-dev --no-emit-project > "$RUNNER_TEMP/requirements-audit.txt"
+        uvx pip-audit==2.10.1 -r "$RUNNER_TEMP/requirements-audit.txt" --require-hashes --disable-pip --strict
 
     - name: Verify lock file is up to date
       run: |
@@ -43,10 +50,10 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Install uv
-      uses: astral-sh/setup-uv@v5
+      uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
 
     - name: Set up Python
       run: uv python install 3.13
