@@ -628,7 +628,7 @@ By default the server communicates over **stdio**, which is what Claude Desktop,
 - `GARMIN_MCP_HTTP_TOKEN`: shared secret for the HTTP transports. When set, every request to `/mcp`, `/sse` and `/messages/` must carry `Authorization: Bearer <token>`; anything else gets `401`. `/healthz` and `/readyz` stay open for probes. See [Protecting the HTTP endpoint](#protecting-the-http-endpoint).
 - `GARMIN_MCP_STATELESS_HTTP`: set to `true` to run `streamable-http` without sessions (default `false`). The MCP SDK drops a stateful session after 30 minutes idle, so the first call after an idle gap gets `404 Session not found`; some clients (including claude.ai custom connectors) report that as a failed tool call rather than re-initializing and retrying. Stateless mode has no sessions to expire. No tool in this server depends on session state, so nothing is lost. Recommended for long-lived remote deployments.
 - `GARMIN_MCP_CALL_TIMEOUT`: per-request timeout in seconds for calls to Garmin (default `90`). Garmin's API occasionally stalls a single request indefinitely; without this bound the call hangs until the MCP client's own timeout fires and reports the whole server as unresponsive. On timeout the tool returns a clear, retry-able error instead. Set to `0` to disable the bound.
-- `GARMIN_TOKENS_JSON` (Docker image only): the content of `garmin_tokens.json` written by `garmin-mcp-auth`, as raw JSON or base64-encoded JSON. The image entrypoint writes it to the token store (`GARMINTOKENS`, default `/root/.garminconnect`) on start, so container platforms need no file copied into a volume. The store stays the source of truth while the server runs (the Garmin client refreshes tokens and writes them back), so the file is only rewritten when this value is new or has changed; mount a volume on the token directory to keep refreshed tokens across restarts. After `garmin-mcp-auth --force-reauth`, set the new content here to replace the old tokens. Treat the value like a password: it grants full access to the Garmin account.
+- `GARMIN_TOKENS_JSON` (Docker image only): the content of `garmin_tokens.json` written by `garmin-mcp-auth`, as raw JSON or base64-encoded JSON. The image entrypoint writes it to the token store (`GARMINTOKENS`, default `/home/garmin/.garminconnect`) on start, so container platforms need no file copied into a volume. The store stays the source of truth while the server runs (the Garmin client refreshes tokens and writes them back), so the file is only rewritten when this value is new or has changed; mount a volume on the token directory to keep refreshed tokens across restarts. After `garmin-mcp-auth --force-reauth`, set the new content here to replace the old tokens. Treat the value like a password: it grants full access to the Garmin account.
 
 ```bash
 GARMIN_MCP_TRANSPORT=streamable-http garmin-mcp
@@ -903,7 +903,7 @@ docker build -t garmin-mcp .
 docker run -it \
   -e GARMIN_EMAIL="your_email@example.com" \
   -e GARMIN_PASSWORD="your_password" \
-  -v garmin-tokens:/root/.garminconnect \
+  -v garmin-tokens:/home/garmin/.garminconnect \
   garmin-mcp
 ```
 
@@ -984,6 +984,23 @@ docker volume inspect garmin_mcp_garmin-tokens
 # Remove the volume (will require re-authentication)
 docker volume rm garmin_mcp_garmin-tokens
 ```
+
+The image runs as the unprivileged user `10001:10001` (not root), with
+`HOME=/home/garmin`, the token volume at `/home/garmin/.garminconnect`, and
+`GARMIN_FILE_TOOLS=off` (see "File tools off"). A token volume created by an
+earlier image belongs to root and the server would start without tokens. Give
+it to the new user once:
+
+```bash
+docker run --rm --user 0 -v garmin_mcp_garmin-tokens:/t --entrypoint chown garmin-mcp -R 10001:10001 /t
+```
+
+Dependencies are installed from `uv.lock` with
+`uv sync --frozen --no-dev --no-cache` and the image contains no tests.
+`docker-compose.yml` also sets `no-new-privileges`, drops all capabilities and
+runs with a read-only root and a tmpfs on `/tmp`. If the token store is not private or not owned by the
+container user (a volume still owned by root), a start with file tools off
+stops with an error naming it, instead of running without tokens.
 
 #### Using with Claude Desktop via Docker
 

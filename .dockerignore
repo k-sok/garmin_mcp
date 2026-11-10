@@ -1,7 +1,6 @@
 # Docker build context exclusions. Kept separate from .gitignore: git and
-# Docker have different concerns (e.g. the Dockerfile copies tests/ and
-# pytest.ini into the image for in-container testing, which a shared
-# .gitignore-based ignore file can't express safely).
+# Docker have different concerns. The image copies no tests; it installs the
+# locked runtime dependencies only.
 
 .git/
 .github/

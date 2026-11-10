@@ -32,9 +32,20 @@ services:
     # ports:
     #   - "8000:8000"
 
-    # Mount volume to persist Garmin OAuth tokens
+    # Mount volume to persist Garmin OAuth tokens. The container runs as UID/GID
+    # 10001, so the volume must belong to it (README, "Docker Volume Management").
     volumes:
-      - garmin-tokens:/root/.garminconnect
+      - garmin-tokens:/home/garmin/.garminconnect
+
+    # Hardening: no privilege gain, no capabilities, a read-only root (the
+    # server writes only to the token volume and /tmp).
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
 
     # Restart policy
     restart: unless-stopped
